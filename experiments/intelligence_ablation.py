@@ -50,7 +50,8 @@ def walk(key, final_states, lam, pts, wts, sigma, num_steps, dt, goal,
         u_pher = beta * jnp.sum(g * n, 1)
         tg = jnp.arctan2(goal[1] - y, goal[0] - x)
         u_goal = jnp.arctan2(jnp.sin(tg - th), jnp.cos(tg - th))
-        u_ctrl = ctrl_scale * (-lam_t[:, 2] / gamma)
+        # (skip entirely when off: 0 * inf from an exploding costate would give NaN)
+        u_ctrl = ctrl_scale * (-lam_t[:, 2] / gamma) if ctrl_scale != 0 else jnp.zeros_like(th)
         nu = vmap(smooth_piecewise_nu)(x, y)
         if not nu_on_pher:   # remove the nu amplification of trail following in slow ground
             u_pher = u_pher / nu
