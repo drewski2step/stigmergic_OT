@@ -26,6 +26,7 @@ from src.apic import (smooth_piecewise_nu, make_init_fn, simulate_forward_batch,
 
 A = jnp.array([0.0, 0.0]); B = jnp.array([1.0, 1.0])
 T_STAR, T_STRAIGHT, X_STAR = 6.0982, 7.7782, 0.9555
+U_MAX = 1e9        # cap on the adjoint turning command (rad per unit length)
 NU_JUMP = 10.0     # slowness above the interface (set per run via cfg["nu_jump"])
 
 
@@ -67,6 +68,7 @@ def walk(key, final_states, lam, pts, wts, sigma, num_steps, dt, goal,
         u_goal = jnp.arctan2(jnp.sin(tg - th), jnp.cos(tg - th))
         # (skip entirely when off: 0 * inf from an exploding costate would give NaN)
         u_ctrl = ctrl_scale * (-lam_t[:, 2] / gamma) if ctrl_scale != 0 else jnp.zeros_like(th)
+        u_ctrl = jnp.clip(u_ctrl, -U_MAX, U_MAX)
         nu = vmap(nu_fn)(x, y)
         if not nu_on_pher:   # remove the nu amplification of trail following in slow ground
             u_pher = u_pher / nu
@@ -140,9 +142,12 @@ def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
              ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0,
-             mode="ot", time_weight=0.0)
+             mode="ot", time_weight=0.0, eta=0.05, u_max=1e9)
     p.update(cfg)
     set_medium(p["nu_jump"])
+    global U_MAX
+    U_MAX = float(p["u_max"])
+    lam_prev = None
     key = random.PRNGKey(seed)
     init_fn = make_init_fn(A, B, p["batch"])
     pts = jnp.empty((0, 2)); wts = jnp.empty((0,))
@@ -150,10 +155,12 @@ def run(cfg, seed=0, verbose=True):
     hist = []
     for c in range(p["num_cycles"]):
         key, k0, k1, k2, k3 = random.split(key, 5)
-        fwd = walk(k1, init_fn(k0), None, pts, wts, p["sigma"], p["num_steps"], p["dt"], B,
-                   p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"], 0.0, False, p["nu_on_pher"])
+        use_lam = lam_prev if (p["mode"] == "learn" and lam_prev is not None) else None
+        fwd = walk(k1, init_fn(k0), use_lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], B,
+                   p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"],
+                   p["eta"] if use_lam is not None else 0.0, False, p["nu_on_pher"])
         Tf, xf = travel_times(fwd, A, B, p["dt"])
-        if p["mode"] == "stigmergy":
+        if p["mode"] in ("stigmergy", "learn"):
             # Pure stigmergy (no adjoint, no return pass): forward trips deposit, cut at arrival.
             # time_weight = 1: a trip's deposit is scaled by T_straight / T_trip, because with a
             # steady stream of ants a faster route is walked (and marked) more often per unit time.
@@ -165,6 +172,11 @@ def run(cfg, seed=0, verbose=True):
                     wt = (T_STRAIGHT / Tf[i]) ** p["time_weight"]
                     pool.append((c, xy[:hit[0] + 1], wt))
             lam = jnp.zeros((1, 1, 3)); Tb = np.array([np.nan]); bwd = fwd
+            if p["mode"] == "learn":
+                # "learn": each agent keeps the costate of its own trip (Eq. 6, trip-only) and applies
+                # -eta * Gamma(s) / gamma on its NEXT outbound trip at the same s (gradient descent on its path).
+                lam = integrate_costate_trip(fwd, pts, wts, p["sigma"], p["dt"], B, beta=p["beta"], eps_theta=p["eps_theta"])
+                lam_prev = lam
         else:
             lam = None
         if lam is not None:
@@ -175,7 +187,7 @@ def run(cfg, seed=0, verbose=True):
             lam = jnp.clip(integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"]), -50, 50)
         else:
             lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"])
-        if p["mode"] != "stigmergy":
+        if p["mode"] not in ("stigmergy", "learn"):
             fs = fwd[-1]
             fs = jnp.stack([fs[:, 0], fs[:, 1], jnp.mod(fs[:, 2] + jnp.pi, 2 * jnp.pi)], 1)
             bwd = walk(k2, fs, lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], A,
@@ -187,7 +199,7 @@ def run(cfg, seed=0, verbose=True):
         #   "trimmed": every return path, cut at arrival (no pile-up at the nest)
         #   "success": only agents that made it home, cut at arrival (real-ant style)
         bw = np.asarray(bwd)
-        for i in (range(bw.shape[1]) if p["mode"] != "stigmergy" else []):
+        for i in (range(bw.shape[1]) if p["mode"] not in ("stigmergy", "learn") else []):
             xy = bw[:, i, :2]
             hit = np.where(np.hypot(xy[:, 0] - float(A[0]), xy[:, 1] - float(A[1])) < R_HIT)[0]
             if p["deposit"] == "all":
