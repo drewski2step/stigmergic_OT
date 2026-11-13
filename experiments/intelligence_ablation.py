@@ -139,7 +139,8 @@ def travel_times(trajs, start, end, dt):
 def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
-             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0)
+             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0,
+             mode="ot", time_weight=0.0)
     p.update(cfg)
     set_medium(p["nu_jump"])
     key = random.PRNGKey(seed)
@@ -152,34 +153,51 @@ def run(cfg, seed=0, verbose=True):
         fwd = walk(k1, init_fn(k0), None, pts, wts, p["sigma"], p["num_steps"], p["dt"], B,
                    p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"], 0.0, False, p["nu_on_pher"])
         Tf, xf = travel_times(fwd, A, B, p["dt"])
-        if p["costate"] == "trip":
+        if p["mode"] == "stigmergy":
+            # Pure stigmergy (no adjoint, no return pass): forward trips deposit, cut at arrival.
+            # time_weight = 1: a trip's deposit is scaled by T_straight / T_trip, because with a
+            # steady stream of ants a faster route is walked (and marked) more often per unit time.
+            fw = np.asarray(fwd)
+            for i in range(fw.shape[1]):
+                xy = fw[:, i, :2]
+                hit = np.where(np.hypot(xy[:, 0] - float(B[0]), xy[:, 1] - float(B[1])) < R_HIT)[0]
+                if len(hit):
+                    wt = (T_STRAIGHT / Tf[i]) ** p["time_weight"]
+                    pool.append((c, xy[:hit[0] + 1], wt))
+            lam = jnp.zeros((1, 1, 3)); Tb = np.array([np.nan]); bwd = fwd
+        else:
+            lam = None
+        if lam is not None:
+            pass
+        elif p["costate"] == "trip":
             lam = integrate_costate_trip(fwd, pts, wts, p["sigma"], p["dt"], B, beta=p["beta"], eps_theta=p["eps_theta"])
         elif p["costate"] == "clip":
             lam = jnp.clip(integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"]), -50, 50)
         else:
             lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"])
-        fs = fwd[-1]
-        fs = jnp.stack([fs[:, 0], fs[:, 1], jnp.mod(fs[:, 2] + jnp.pi, 2 * jnp.pi)], 1)
-        bwd = walk(k2, fs, lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], A,
-                   p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"],
-                   p["ctrl_scale"], p["reverse_lambda"], p["nu_on_pher"])
-        Tb, xb = travel_times(bwd, B, A, p["dt"])   # return trip B -> A
+        if p["mode"] != "stigmergy":
+            fs = fwd[-1]
+            fs = jnp.stack([fs[:, 0], fs[:, 1], jnp.mod(fs[:, 2] + jnp.pi, 2 * jnp.pi)], 1)
+            bwd = walk(k2, fs, lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], A,
+                       p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"],
+                       p["ctrl_scale"], p["reverse_lambda"], p["nu_on_pher"])
+            Tb, xb = travel_times(bwd, B, A, p["dt"])   # return trip B -> A
         # Which return paths lay pheromone?
         #   "all":     every return path, full length (authors' choice)
         #   "trimmed": every return path, cut at arrival (no pile-up at the nest)
         #   "success": only agents that made it home, cut at arrival (real-ant style)
         bw = np.asarray(bwd)
-        for i in range(bw.shape[1]):
+        for i in (range(bw.shape[1]) if p["mode"] != "stigmergy" else []):
             xy = bw[:, i, :2]
             hit = np.where(np.hypot(xy[:, 0] - float(A[0]), xy[:, 1] - float(A[1])) < R_HIT)[0]
             if p["deposit"] == "all":
-                pool.append((c, xy))
+                pool.append((c, xy, 1.0))
             elif len(hit):
-                pool.append((c, xy[:hit[0] + 1]))
+                pool.append((c, xy[:hit[0] + 1], 1.0))
             elif p["deposit"] == "trimmed":
-                pool.append((c, xy))
+                pool.append((c, xy, 1.0))
         if pool:
-            ids = np.array([ci for ci, _ in pool])
+            ids = np.array([e[0] for e in pool])
             pr = (ids + 1.0) ** 0.5; pr = pr / pr.sum()
             n = min(p["max_trajs"], len(pool))
             idx = np.random.default_rng(seed * 100 + c).choice(len(pool), n, replace=False, p=pr)
@@ -188,7 +206,7 @@ def run(cfg, seed=0, verbose=True):
             # The 0.01 floor is hard-coded in src/apic.py, so we rescale the deposit weight instead:
             # one passage has ridge height w0 * sigma*sqrt(2 pi)/dt; kappa=None keeps the authors' w0 = 1.
             w0 = 1.0 if p["kappa"] is None else 0.01 / (p["kappa"] * p["sigma"] * np.sqrt(2 * np.pi) / p["dt"])
-            wts = jnp.full((pts.shape[0],), float(p["stride"]) * w0)
+            wts = jnp.array(np.concatenate([np.full(len(pool[j][1][::p["stride"]]), pool[j][2]) for j in idx])) * float(p["stride"]) * w0
         row = dict(cycle=c,
                    fwd_ratio=float(np.nanmean(Tf)) / T_STAR, fwd_success=float(np.mean(~np.isnan(Tf))),
                    fwd_xcross=float(np.nanmean(xf)),
