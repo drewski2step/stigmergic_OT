@@ -65,6 +65,44 @@ def walk(key, final_states, lam, pts, wts, sigma, num_steps, dt, goal,
     return tr
 
 
+def integrate_costate_trip(trajs, pts, wts, sigma, dt, goal, beta=1.0, eps_theta=1.0):
+    """Paper Eq. 6, integrated backward ONLY over the actual trip (s = 0 .. arrival).
+
+    Same equations and sign convention as src/apic.integrate_costate, but the
+    terminal condition Gamma = 0, mu = 0 is imposed at the moment each agent
+    reaches its goal; time steps after arrival leave the costate unchanged.
+    (Integrating through the post-arrival tail is what makes the costate overflow.)
+    """
+    from src.apic import _partial_theta_E, _partial_theta_theta_E
+    T, Bn, _ = trajs.shape
+    arrived = jnp.hypot(trajs[:, :, 0] - goal[0], trajs[:, :, 1] - goal[1]) < R_HIT
+    # first arrival index per agent; steps at or after it are "after the trip"
+    first = jnp.where(arrived.any(0), jnp.argmax(arrived, 0), T)
+    active = jnp.arange(T)[:, None] < first[None, :]
+    v_nu = vmap(smooth_piecewise_nu)
+    v_grad_nu = vmap(jax.grad(smooth_piecewise_nu, argnums=(0, 1)))
+    nuE = lambda x_, y_, t_: smooth_piecewise_nu(x_, y_) * _partial_theta_E(x_, y_, t_, pts, wts, sigma, beta)
+    v_grad_nuE = vmap(jax.grad(nuE, argnums=(0, 1)))
+    v_e2 = vmap(lambda x_, y_, t_: _partial_theta_theta_E(x_, y_, t_, pts, wts, sigma, beta))
+
+    def step(carry, inp):
+        st, act = inp
+        mu, G = carry[:, :2], carry[:, 2]
+        x, y, th = st[:, 0], st[:, 1], st[:, 2]
+        a, b = v_grad_nu(x, y); c, d = v_grad_nuE(x, y, th)
+        mu_p = jnp.stack([a + c, b + d], 1)
+        n = jnp.stack([-jnp.sin(th), jnp.cos(th)], 1)
+        G_p = (v_nu(x, y) * v_e2(x, y, th) * G + jnp.sum(mu * n, 1)) / eps_theta
+        new = jnp.concatenate([mu - mu_p * dt, (G - G_p * dt)[:, None]], 1)
+        new = jnp.where(act[:, None], new, carry)
+        return new, new
+
+    init = jnp.zeros((Bn, 3))
+    _, after = lax.scan(step, init, (trajs[::-1][:-1], active[::-1][:-1]))
+    lam = jnp.concatenate([init[None], after], 0)[::-1]
+    return -lam
+
+
 def travel_times(trajs, start, end, dt):
     """Per-agent travel time from start until first within R_HIT of end (nan if never)."""
     tr = np.asarray(trajs)
@@ -86,7 +124,7 @@ def travel_times(trajs, start, end, dt):
 def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
-             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None)
+             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors")
     p.update(cfg)
     key = random.PRNGKey(seed)
     init_fn = make_init_fn(A, B, p["batch"])
@@ -98,7 +136,12 @@ def run(cfg, seed=0, verbose=True):
         fwd = walk(k1, init_fn(k0), None, pts, wts, p["sigma"], p["num_steps"], p["dt"], B,
                    p["beta"], p["D_theta"], p["eps_theta"], p["goal_gain"], 0.0, False, p["nu_on_pher"])
         Tf, xf = travel_times(fwd, A, B, p["dt"])
-        lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], beta=p["beta"], eps_theta=p["eps_theta"])
+        if p["costate"] == "trip":
+            lam = integrate_costate_trip(fwd, pts, wts, p["sigma"], p["dt"], B, beta=p["beta"], eps_theta=p["eps_theta"])
+        elif p["costate"] == "clip":
+            lam = jnp.clip(integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], beta=p["beta"], eps_theta=p["eps_theta"]), -50, 50)
+        else:
+            lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], beta=p["beta"], eps_theta=p["eps_theta"])
         fs = fwd[-1]
         fs = jnp.stack([fs[:, 0], fs[:, 1], jnp.mod(fs[:, 2] + jnp.pi, 2 * jnp.pi)], 1)
         bwd = walk(k2, fs, lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], A,
