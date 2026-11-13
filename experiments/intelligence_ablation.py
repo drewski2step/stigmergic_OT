@@ -34,14 +34,19 @@ def nu_fn(x, y):
     return smooth_piecewise_nu(x, y, jump=NU_JUMP)
 
 
-def set_medium(jump):
-    """Set the slowness ratio and recompute the Fermat (Snell) optimum for A -> B."""
-    global NU_JUMP, T_STAR, T_STRAIGHT, X_STAR
+def set_medium(jump, alpha_deg=45.0):
+    """Set the slowness ratio and the food position, then recompute the Fermat optimum.
+
+    alpha_deg = angle of the straight nest-food line from the border normal (Oettler's alpha);
+    the border is y = 0.5 and the food sits at (tan(alpha), 1)."""
+    global NU_JUMP, T_STAR, T_STRAIGHT, X_STAR, B
     NU_JUMP = float(jump)
-    xs = np.linspace(0, 1, 200001)
-    T = np.hypot(0.5, xs) + NU_JUMP * np.hypot(0.5, 1 - xs)
+    bx = float(np.tan(np.deg2rad(alpha_deg)))
+    B = jnp.array([bx, 1.0])
+    xs = np.linspace(0, bx, 200001)
+    T = np.hypot(0.5, xs) + NU_JUMP * np.hypot(0.5, bx - xs)
     i = np.argmin(T); X_STAR, T_STAR = float(xs[i]), float(T[i])
-    T_STRAIGHT = float(np.hypot(0.5, 0.5) * (1 + NU_JUMP))
+    T_STRAIGHT = float(np.hypot(0.5, bx / 2) * (1 + NU_JUMP))
 R_HIT = 0.05
 
 
@@ -142,9 +147,9 @@ def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
              ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0,
-             mode="ot", time_weight=0.0, eta=0.05, u_max=1e9, lam_memory=0.0)
+             mode="ot", time_weight=0.0, eta=0.05, u_max=1e9, lam_memory=0.0, alpha_deg=45.0)
     p.update(cfg)
-    set_medium(p["nu_jump"])
+    set_medium(p["nu_jump"], p["alpha_deg"])
     global U_MAX
     U_MAX = float(p["u_max"])
     lam_prev = None

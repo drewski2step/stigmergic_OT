@@ -1,0 +1,7 @@
+{"source": "Oettler et al. 2013 PLoS ONE 8:e59739, Fig. 3, read off the plot by eye (approximate, +/- ~5 percentage points). 0% = Fermat optimum, 100% = direct path. Order within each condition: three colonies.",
+ "large_alpha": {"glass-rough": {"deg": [0, 35, 6], "time": [0, 10, 2]},
+                 "glass-smooth": {"deg": [-18, 27, -18], "time": [3, 5, 3]},
+                 "smooth-rough": {"deg": [-160, -37, 39], "time": [123, 9, 10]}},
+ "small_alpha": {"glass-rough": {"deg": [-68, 93, 48], "time": [40, 90, 26]},
+                 "glass-smooth": {"deg": [30, 40, 3], "time": [30, 17, 22]},
+                 "smooth-rough": {"deg": [103, -77, 80], "time": [113, 73, 67]}}}
