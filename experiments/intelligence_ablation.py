@@ -86,7 +86,7 @@ def travel_times(trajs, start, end, dt):
 def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
-             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True)
+             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None)
     p.update(cfg)
     key = random.PRNGKey(seed)
     init_fn = make_init_fn(A, B, p["batch"])
@@ -125,12 +125,17 @@ def run(cfg, seed=0, verbose=True):
             n = min(p["max_trajs"], len(pool))
             idx = np.random.default_rng(seed * 100 + c).choice(len(pool), n, replace=False, p=pr)
             pts = jnp.array(np.concatenate([pool[j][1][::p["stride"]] for j in idx]))
-            wts = jnp.full((pts.shape[0],), float(p["stride"]))
+            # kappa = floor / one-passage ridge height, in passages (Deneubourg's k analog).
+            # The 0.01 floor is hard-coded in src/apic.py, so we rescale the deposit weight instead:
+            # one passage has ridge height w0 * sigma*sqrt(2 pi)/dt; kappa=None keeps the authors' w0 = 1.
+            w0 = 1.0 if p["kappa"] is None else 0.01 / (p["kappa"] * p["sigma"] * np.sqrt(2 * np.pi) / p["dt"])
+            wts = jnp.full((pts.shape[0],), float(p["stride"]) * w0)
         row = dict(cycle=c,
                    fwd_ratio=float(np.nanmean(Tf)) / T_STAR, fwd_success=float(np.mean(~np.isnan(Tf))),
                    fwd_xcross=float(np.nanmean(xf)),
                    ret_ratio=float(np.nanmean(Tb)) / T_STAR if np.any(~np.isnan(Tb)) else float("nan"),
-                   ret_success=float(np.mean(~np.isnan(Tb))))
+                   ret_success=float(np.mean(~np.isnan(Tb))),
+                   costate_max=float(np.nanmax(np.abs(np.asarray(lam)[:, :, 2]))))
         hist.append(row)
         if verbose:
             print(f"  cycle {c}: forward T/T*={row['fwd_ratio']:.3f} (hit {row['fwd_success']:.2f}, x_cross={row['fwd_xcross']:.3f})"

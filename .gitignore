@@ -19,3 +19,4 @@ venv/
 *.swp
 *~
 experiments/results/bridge/*.log
+experiments/results/calibrated/*.log
