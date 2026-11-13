@@ -18,3 +18,4 @@ venv/
 # Editor
 *.swp
 *~
+experiments/results/bridge/*.log
