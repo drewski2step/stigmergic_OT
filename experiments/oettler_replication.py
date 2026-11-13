@@ -27,8 +27,11 @@ def scores(x, bx, jump):
 
 if __name__ == "__main__":
     base = json.loads(sys.argv[1]); nseed = int(sys.argv[2]); out = sys.argv[3]
+    only = sys.argv[4].split(",") if len(sys.argv) > 4 else None   # optional: restrict to these pairs
     res = []
     for s1, s2 in PAIRS:
+        if only and f"{s1}-{s2}" not in only:
+            continue
         for alpha in (60.0, 30.0):
             jump = SPEED[s1] / SPEED[s2]
             for seed in range(nseed):
