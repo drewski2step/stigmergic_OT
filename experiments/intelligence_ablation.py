@@ -142,7 +142,7 @@ def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
              ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0,
-             mode="ot", time_weight=0.0, eta=0.05, u_max=1e9)
+             mode="ot", time_weight=0.0, eta=0.05, u_max=1e9, lam_memory=0.0)
     p.update(cfg)
     set_medium(p["nu_jump"])
     global U_MAX
@@ -176,7 +176,8 @@ def run(cfg, seed=0, verbose=True):
                 # "learn": each agent keeps the costate of its own trip (Eq. 6, trip-only) and applies
                 # -eta * Gamma(s) / gamma on its NEXT outbound trip at the same s (gradient descent on its path).
                 lam = integrate_costate_trip(fwd, pts, wts, p["sigma"], p["dt"], B, beta=p["beta"], eps_theta=p["eps_theta"])
-                lam_prev = lam
+                # lam_memory: each ant blends its new hindsight with what it remembered from earlier trips
+                lam_prev = lam if lam_prev is None else p["lam_memory"] * lam_prev + (1 - p["lam_memory"]) * lam
         else:
             lam = None
         if lam is not None:
