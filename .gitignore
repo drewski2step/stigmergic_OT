@@ -20,3 +20,4 @@ venv/
 *~
 experiments/results/bridge/*.log
 experiments/results/calibrated/*.log
+experiments/results/oettler/*.log

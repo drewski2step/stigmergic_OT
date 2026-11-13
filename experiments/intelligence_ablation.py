@@ -26,6 +26,21 @@ from src.apic import (smooth_piecewise_nu, make_init_fn, simulate_forward_batch,
 
 A = jnp.array([0.0, 0.0]); B = jnp.array([1.0, 1.0])
 T_STAR, T_STRAIGHT, X_STAR = 6.0982, 7.7782, 0.9555
+NU_JUMP = 10.0     # slowness above the interface (set per run via cfg["nu_jump"])
+
+
+def nu_fn(x, y):
+    return smooth_piecewise_nu(x, y, jump=NU_JUMP)
+
+
+def set_medium(jump):
+    """Set the slowness ratio and recompute the Fermat (Snell) optimum for A -> B."""
+    global NU_JUMP, T_STAR, T_STRAIGHT, X_STAR
+    NU_JUMP = float(jump)
+    xs = np.linspace(0, 1, 200001)
+    T = np.hypot(0.5, xs) + NU_JUMP * np.hypot(0.5, 1 - xs)
+    i = np.argmin(T); X_STAR, T_STAR = float(xs[i]), float(T[i])
+    T_STRAIGHT = float(np.hypot(0.5, 0.5) * (1 + NU_JUMP))
 R_HIT = 0.05
 
 
@@ -52,7 +67,7 @@ def walk(key, final_states, lam, pts, wts, sigma, num_steps, dt, goal,
         u_goal = jnp.arctan2(jnp.sin(tg - th), jnp.cos(tg - th))
         # (skip entirely when off: 0 * inf from an exploding costate would give NaN)
         u_ctrl = ctrl_scale * (-lam_t[:, 2] / gamma) if ctrl_scale != 0 else jnp.zeros_like(th)
-        nu = vmap(smooth_piecewise_nu)(x, y)
+        nu = vmap(nu_fn)(x, y)
         if not nu_on_pher:   # remove the nu amplification of trail following in slow ground
             u_pher = u_pher / nu
         th2 = _step_heading(th, u_pher, u_goal, u_ctrl, nu, random.normal(k, (B_,)),
@@ -79,9 +94,9 @@ def integrate_costate_trip(trajs, pts, wts, sigma, dt, goal, beta=1.0, eps_theta
     # first arrival index per agent; steps at or after it are "after the trip"
     first = jnp.where(arrived.any(0), jnp.argmax(arrived, 0), T)
     active = jnp.arange(T)[:, None] < first[None, :]
-    v_nu = vmap(smooth_piecewise_nu)
-    v_grad_nu = vmap(jax.grad(smooth_piecewise_nu, argnums=(0, 1)))
-    nuE = lambda x_, y_, t_: smooth_piecewise_nu(x_, y_) * _partial_theta_E(x_, y_, t_, pts, wts, sigma, beta)
+    v_nu = vmap(nu_fn)
+    v_grad_nu = vmap(jax.grad(nu_fn, argnums=(0, 1)))
+    nuE = lambda x_, y_, t_: nu_fn(x_, y_) * _partial_theta_E(x_, y_, t_, pts, wts, sigma, beta)
     v_grad_nuE = vmap(jax.grad(nuE, argnums=(0, 1)))
     v_e2 = vmap(lambda x_, y_, t_: _partial_theta_theta_E(x_, y_, t_, pts, wts, sigma, beta))
 
@@ -114,7 +129,7 @@ def travel_times(trajs, start, end, dt):
         if len(hit) == 0:
             out.append(np.nan); xc.append(np.nan); continue
         i = hit[0]
-        nu = np.asarray(vmap(smooth_piecewise_nu)(jnp.array(x[:i]), jnp.array(y[:i])))
+        nu = np.asarray(vmap(nu_fn)(jnp.array(x[:i]), jnp.array(y[:i])))
         out.append(float(np.sum(nu * dt)))
         c = np.where(y[:i] > 0.5)[0]
         xc.append(float(x[c[0]]) if len(c) else np.nan)
@@ -124,8 +139,9 @@ def travel_times(trajs, start, end, dt):
 def run(cfg, seed=0, verbose=True):
     p = dict(num_cycles=6, batch=8, num_steps=1600, dt=0.001, sigma=0.05,
              beta=1.0, D_theta=0.5, eps_theta=1.0, goal_gain=10.0,
-             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors")
+             ctrl_scale=1.0, reverse_lambda=False, stride=8, max_trajs=200, deposit="all", nu_on_pher=True, kappa=None, costate="authors", nu_jump=10.0)
     p.update(cfg)
+    set_medium(p["nu_jump"])
     key = random.PRNGKey(seed)
     init_fn = make_init_fn(A, B, p["batch"])
     pts = jnp.empty((0, 2)); wts = jnp.empty((0,))
@@ -139,9 +155,9 @@ def run(cfg, seed=0, verbose=True):
         if p["costate"] == "trip":
             lam = integrate_costate_trip(fwd, pts, wts, p["sigma"], p["dt"], B, beta=p["beta"], eps_theta=p["eps_theta"])
         elif p["costate"] == "clip":
-            lam = jnp.clip(integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], beta=p["beta"], eps_theta=p["eps_theta"]), -50, 50)
+            lam = jnp.clip(integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"]), -50, 50)
         else:
-            lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], beta=p["beta"], eps_theta=p["eps_theta"])
+            lam = integrate_costate(fwd, pts, wts, p["sigma"], p["dt"], nu_fn=nu_fn, beta=p["beta"], eps_theta=p["eps_theta"])
         fs = fwd[-1]
         fs = jnp.stack([fs[:, 0], fs[:, 1], jnp.mod(fs[:, 2] + jnp.pi, 2 * jnp.pi)], 1)
         bwd = walk(k2, fs, lam, pts, wts, p["sigma"], p["num_steps"], p["dt"], A,

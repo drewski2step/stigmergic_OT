@@ -4,10 +4,11 @@ sys.path.insert(0, os.path.dirname(__file__)); sys.path.insert(0, os.path.join(o
 import numpy as np, intelligence_ablation as ia
 name, cfg, nseed, out = sys.argv[1], json.loads(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 runs = [ia.run(cfg, seed=s, verbose=False)[0] for s in range(nseed)]
+print(f"{name}: Fermat crossing x* = {ia.X_STAR:.3f}, straight line T/T* = {ia.T_STRAIGHT / ia.T_STAR:.3f}", flush=True)
 res = {}
 for key in ["fwd_ratio", "fwd_xcross", "fwd_success", "ret_success", "costate_max"]:
     res[key] = [[r[c][key] for r in runs] for c in range(len(runs[0]))]
-json.dump(dict(cfg=cfg, **res), open(out, "w"), indent=1)
+json.dump(dict(cfg=cfg, x_star=ia.X_STAR, T_straight_ratio=ia.T_STRAIGHT / ia.T_STAR, **res), open(out, "w"), indent=1)
 for c in range(len(runs[0])):
     print(f"{name} cycle {c}: T/T*={np.nanmean(res['fwd_ratio'][c]):.3f}±{np.nanstd(res['fwd_ratio'][c]):.3f}"
           f"  x_cross={np.nanmean(res['fwd_xcross'][c]):.3f}  reached={np.mean(res['fwd_success'][c]):.2f}"
