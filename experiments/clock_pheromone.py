@@ -28,7 +28,7 @@ def fermat(bx, ratio):
 
 
 def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01, beta=2.0, D=0.5,
-        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0):
+        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02):
     rng = np.random.default_rng(seed)
     floor = kappa / (sigma * np.sqrt(2 * np.pi))     # kappa passages' worth of ridge height (Deneubourg-calibrated: 50)
     bx = float(np.tan(np.deg2rad(alpha)))
@@ -38,6 +38,9 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
     A, B = np.array([0.0, 0.0]), np.array([bx, 1.0])
 
     nu_at = lambda y: np.where(y < 0.5, 1.0, ratio)
+    # Speed field with a border of finite width delta (an ant's body straddles the edge).
+    v_at = lambda y: 1.0 + (1.0 / ratio - 1.0) * 0.5 * (1 + np.tanh((y - 0.5) / delta))
+    dv_at = lambda y: (1.0 / ratio - 1.0) * 0.5 / delta / np.cosh((y - 0.5) / delta) ** 2
     if seed_trail > 0:
         # Bootstrap: an established straight trail worth `seed_trail` passages each way, as if the
         # first route had been set by path integration. After this, only local rules act.
@@ -75,9 +78,13 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         gx = np.where(follow == 1, map_coordinates(gxF[1], [ix, iy], order=1), map_coordinates(gxF[0], [ix, iy], order=1))
         gy = np.where(follow == 1, map_coordinates(gyF[1], [ix, iy], order=1), map_coordinates(gyF[0], [ix, iy], order=1))
         w = beta * (-gx * np.sin(a) + gy * np.cos(a))
+        if k_ref:
+            # Local Fermat rule: turn toward the slower side, omega = -k * n . grad v  (grad v = (0, v'(y)))
+            w = w - k_ref * np.cos(a) * dv_at(p[:, 1])
+            step = dt * v_at(p[:, 1])
+        else:
+            step = dt / np.where(p[:, 1] < 0.5, 1.0, ratio)
         a = a + w * dt + np.sqrt(2 * D * dt) * rng.normal(size=len(a))
-        nu = np.where(p[:, 1] < 0.5, 1.0, ratio)
-        step = dt / nu
         newp = p + step[:, None] * np.c_[np.cos(a), np.sin(a)]
         # reflecting walls
         for d, lo, hi in ((0, x0 + h, x1 - h), (1, y0 + h, y1 - h)):
