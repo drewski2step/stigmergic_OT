@@ -28,7 +28,7 @@ def fermat(bx, ratio):
 
 
 def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01, beta=2.0, D=0.5,
-        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02):
+        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None):
     rng = np.random.default_rng(seed)
     floor = kappa / (sigma * np.sqrt(2 * np.pi))     # kappa passages' worth of ridge height (Deneubourg-calibrated: 50)
     bx = float(np.tan(np.deg2rad(alpha)))
@@ -44,9 +44,14 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
     if seed_trail > 0:
         # Bootstrap: an established straight trail worth `seed_trail` passages each way, as if the
         # first route had been set by path integration. After this, only local rules act.
-        u = np.linspace(0, 1, 4001); P = A[None] + u[:, None] * (B - A)[None]
-        ds = np.hypot(*(B - A)) / (len(u) - 1)
-        tA = np.concatenate([[0], np.cumsum(nu_at(P[1:, 1]) * ds)]); tB = tA[-1] - tA
+        u = np.linspace(0, 1, 4001)
+        if seed_xc is None:
+            P = A[None] + u[:, None] * (B - A)[None]
+        else:                                   # two straight legs meeting the border at x = seed_xc
+            C = np.array([seed_xc, 0.5])
+            P = np.where(u[:, None] < 0.5, A + 2 * u[:, None] * (C - A), C + (2 * u[:, None] - 1) * (B - C))
+        dsv = np.hypot(*np.diff(P, axis=0).T); ds = np.r_[dsv, dsv[-1]]
+        tA = np.concatenate([[0], np.cumsum(nu_at(P[1:, 1]) * dsv)]); tB = tA[-1] - tA
         gi = np.round((P[:, 0] - x0) / h).astype(int); gj = np.round((P[:, 1] - y0) / h).astype(int)
         clk = (lambda tt: np.exp(-tt / tau)) if np.isfinite(tau) else (lambda tt: np.ones_like(tt))
         np.add.at(S[0], (gi, gj), seed_trail * clk(tA) * ds / h**2)
@@ -78,10 +83,21 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         gx = np.where(follow == 1, map_coordinates(gxF[1], [ix, iy], order=1), map_coordinates(gxF[0], [ix, iy], order=1))
         gy = np.where(follow == 1, map_coordinates(gyF[1], [ix, iy], order=1), map_coordinates(gyF[0], [ix, iy], order=1))
         w = beta * (-gx * np.sin(a) + gy * np.cos(a))
-        if k_ref:
-            # Local Fermat rule: turn toward the slower side, omega = -k * n . grad v  (grad v = (0, v'(y)))
-            w = w - k_ref * np.cos(a) * dv_at(p[:, 1])
-            step = dt * v_at(p[:, 1])
+        if k_ref or c_mis:
+            vy, dvy = v_at(p[:, 1]), dv_at(p[:, 1])
+            if c_mis:
+                # Snell-mismatch rule. Along a path that obeys Snell, nu*sin(theta) is constant.
+                # The ant senses the rate of change of nu*|cos a| along the trail it is following
+                # (its own speed change and the trail's turning, w). If the trail is too straight it
+                # veers toward the faster side; if it over-bends, toward the slower side.
+                nu_ = 1.0 / vy; dnu = -dvy / vy**2
+                Ddot = dnu * vy * np.sin(a) * np.abs(np.cos(a)) - nu_ * np.sin(a) * np.sign(np.cos(a)) * w
+                Ddot = np.where(np.abs(dvy) > 1e-3 * np.abs(dv_at(0.5)), Ddot, 0.0)   # only felt at the border
+                w = w - c_mis * Ddot * np.sign(np.sin(a)) * np.sign(np.cos(a))
+            if k_ref:
+                # Local Fermat rule: turn toward the slower side, omega = -k * n . grad v  (grad v = (0, v'(y)))
+                w = w - k_ref * np.cos(a) * dvy
+            step = dt * vy
         else:
             step = dt / np.where(p[:, 1] < 0.5, 1.0, ratio)
         a = a + w * dt + np.sqrt(2 * D * dt) * rng.normal(size=len(a))
