@@ -28,7 +28,7 @@ def fermat(bx, ratio):
 
 
 def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01, beta=2.0, D=0.5,
-        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None):
+        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None, goal_gain=0.0, sat=0.0, per_length=False):
     rng = np.random.default_rng(seed)
     floor = kappa / (sigma * np.sqrt(2 * np.pi))     # kappa passages' worth of ridge height (Deneubourg-calibrated: 50)
     bx = float(np.tan(np.deg2rad(alpha)))
@@ -83,6 +83,10 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         gx = np.where(follow == 1, map_coordinates(gxF[1], [ix, iy], order=1), map_coordinates(gxF[0], [ix, iy], order=1))
         gy = np.where(follow == 1, map_coordinates(gyF[1], [ix, iy], order=1), map_coordinates(gyF[0], [ix, iy], order=1))
         w = beta * (-gx * np.sin(a) + gy * np.cos(a))
+        if goal_gain:
+            # Path-integration vector: a sense of the direction to the current goal (nest or remembered food site).
+            tgt = np.where(s[:, None] == 0, B, A) - p
+            w = w + goal_gain * np.sin(np.arctan2(tgt[:, 1], tgt[:, 0]) - a)
         if k_ref or c_mis:
             vy, dvy = v_at(p[:, 1]), dv_at(p[:, 1])
             if c_mis:
@@ -100,7 +104,13 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
             step = dt * vy
         else:
             step = dt / np.where(p[:, 1] < 0.5, 1.0, ratio)
-        a = a + w * dt + np.sqrt(2 * D * dt) * rng.normal(size=len(a))
+        if per_length:
+            # Turning and wandering set per unit distance walked, not per unit time: a slower ant traces
+            # the same shape of path, just more slowly (step = distance covered this tick at speed <= 1).
+            sc = step / dt
+            a = a + w * dt * sc + np.sqrt(2 * D * dt * sc) * rng.normal(size=len(a))
+        else:
+            a = a + w * dt + np.sqrt(2 * D * dt) * rng.normal(size=len(a))
         newp = p + step[:, None] * np.c_[np.cos(a), np.sin(a)]
         # reflecting walls
         for d, lo, hi in ((0, x0 + h, x1 - h), (1, y0 + h, y1 - h)):
@@ -121,6 +131,10 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         amt = (np.exp(-tl / tau) if np.isfinite(tau) else np.ones_like(tl)) * step / (h * h)
         gi = np.clip(np.round((newp[:, 0] - x0) / h).astype(int), 0, nx - 1)
         gj = np.clip(np.round((newp[:, 1] - y0) / h).astype(int), 0, ny - 1)
+        if sat:
+            # Negative feedback: ants lay less where their scent is already strong (sat = level, in passages,
+            # at which laying is halved). Reported for Lasius niger (Czaczkes et al. 2013).
+            amt = amt / (1.0 + blur[s, gi, gj] / (sat / (sigma * np.sqrt(2 * np.pi))))
         np.add.at(S[0], (gi[s == 0], gj[s == 0]), amt[s == 0])   # outbound lays nest scent
         np.add.at(S[1], (gi[s == 1], gj[s == 1]), amt[s == 1])   # inbound lays food scent
         # arrivals: turn around, restart the clock
