@@ -28,7 +28,7 @@ def fermat(bx, ratio):
 
 
 def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01, beta=2.0, D=0.5,
-        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None, goal_gain=0.0, sat=0.0, per_length=False):
+        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None, goal_gain=0.0, sat=0.0, per_length=False, one_scent=False):
     rng = np.random.default_rng(seed)
     floor = kappa / (sigma * np.sqrt(2 * np.pi))     # kappa passages' worth of ridge height (Deneubourg-calibrated: 50)
     bx = float(np.tan(np.deg2rad(alpha)))
@@ -80,6 +80,8 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         p = pos[live]; s = state[live]; a = th[live]
         ix = (p[:, 0] - x0) / h; iy = (p[:, 1] - y0) / h
         follow = 1 - s                               # outbound follows food scent (1), inbound nest scent (0)
+        if one_scent:
+            follow = np.zeros_like(s)                # a single trail pheromone, laid and followed by everyone
         gx = np.where(follow == 1, map_coordinates(gxF[1], [ix, iy], order=1), map_coordinates(gxF[0], [ix, iy], order=1))
         gy = np.where(follow == 1, map_coordinates(gyF[1], [ix, iy], order=1), map_coordinates(gyF[0], [ix, iy], order=1))
         w = beta * (-gx * np.sin(a) + gy * np.cos(a))
@@ -134,9 +136,12 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
         if sat:
             # Negative feedback: ants lay less where their scent is already strong (sat = level, in passages,
             # at which laying is halved). Reported for Lasius niger (Czaczkes et al. 2013).
-            amt = amt / (1.0 + blur[s, gi, gj] / (sat / (sigma * np.sqrt(2 * np.pi))))
-        np.add.at(S[0], (gi[s == 0], gj[s == 0]), amt[s == 0])   # outbound lays nest scent
-        np.add.at(S[1], (gi[s == 1], gj[s == 1]), amt[s == 1])   # inbound lays food scent
+            amt = amt / (1.0 + blur[np.zeros_like(s) if one_scent else s, gi, gj] / (sat / (sigma * np.sqrt(2 * np.pi))))
+        if one_scent:
+            np.add.at(S[0], (gi, gj), amt)
+        else:
+            np.add.at(S[0], (gi[s == 0], gj[s == 0]), amt[s == 0])   # outbound lays nest scent
+            np.add.at(S[1], (gi[s == 1], gj[s == 1]), amt[s == 1])   # inbound lays food scent
         # arrivals: turn around, restart the clock
         goal = np.where(s[:, None] == 0, B, A)
         arr = np.hypot(*(newp - goal).T) < r_hit
