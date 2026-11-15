@@ -28,7 +28,7 @@ def fermat(bx, ratio):
 
 
 def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01, beta=2.0, D=0.5,
-        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None, goal_gain=0.0, sat=0.0, per_length=False, one_scent=False):
+        sigma=0.04, h=0.01, evap=0.05, kappa=50.0, margin=0.15, r_hit=0.05, seed=0, snap_every=None, seed_trail=0.0, record=0, k_ref=0.0, delta=0.02, c_mis=0.0, seed_xc=None, goal_gain=0.0, sat=0.0, per_length=False, one_scent=False, lay_per_time=False):
     rng = np.random.default_rng(seed)
     floor = kappa / (sigma * np.sqrt(2 * np.pi))     # kappa passages' worth of ridge height (Deneubourg-calibrated: 50)
     bx = float(np.tan(np.deg2rad(alpha)))
@@ -130,7 +130,9 @@ def run(alpha=60.0, ratio=2.83, tau=np.inf, n_agents=200, T_total=400.0, dt=0.01
             xcross[idx[cr]] = p[cr, 0] + f * (newp[cr, 0] - p[cr, 0])
         tl = t_leg[live] + dt
         # clock deposit: exp(-t/tau) per unit length, into the scent this leg lays
-        amt = (np.exp(-tl / tau) if np.isfinite(tau) else np.ones_like(tl)) * step / (h * h)
+        # Laying per unit distance (default) or per unit time: per time, an ant leaves more scent per
+        # millimetre wherever it walks slowly, so the scent density carries the local slowness.
+        amt = (np.exp(-tl / tau) if np.isfinite(tau) else np.ones_like(tl)) * (dt if lay_per_time else step) / (h * h)
         gi = np.clip(np.round((newp[:, 0] - x0) / h).astype(int), 0, nx - 1)
         gj = np.clip(np.round((newp[:, 1] - y0) / h).astype(int), 0, ny - 1)
         if sat:
